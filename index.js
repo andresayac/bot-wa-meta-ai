@@ -18,10 +18,10 @@ import {
     parseLinksWithText,
     timeout,
     divideTextInTokens,
-    filterText
+    filterText,
 } from './utils/index.js'
 import { downloadMediaMessage } from '@whiskeysockets/baileys'
-import BingAI from './services/BingAI.js'
+import { MetaAI } from './services/MetaAI.js'
 import { pdfToText } from './services/PdfToText.js'
 import { textToSpeech } from './services/TextToSpeech.js'
 import languages from './languages.js'
@@ -30,19 +30,8 @@ dotenv.config({
     allowEmptyValues: true,
 })
 
-const bingAI = new BingAI({
-    host: process.env.BING_AI_HOST ?? 'https://www.bing.com',
-    cookies: process.env.BING_AI_COOKIES,
-    genImage: process.env.BING_AI_GENERATE_IMAGE === 'true',
-    debug: process.env.BING_AI_DEBUG === 'true',
-})
-
-const bingAIMode = process.env.BING_AI_MODE ?? 'precise'
-
 const languageBot = languages[process.env.BOT_LANGUAGE ?? 'es']
-
-const systemMessage = process.env.BING_AI_SYSTEM_MESSAGE ?? '🤖'
-
+const systemMessage = process.env.META_AI_SYSTEM_MESSAGE ?? '🤖'
 const allMessagesWithAudio = process.env.BOT_ALL_MSG_WITH_AUDIO === 'true'
 
 const maxTimeQueue = 600000
@@ -204,23 +193,23 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
         if (!state?.getMyState()?.conversationBot) {
             const prompt = ctx.body.trim()
 
+            state.update({
+                metaAi: new MetaAI(),
+            })
+
+            console.log(systemMessage + ' ' + prompt)
+
             try {
                 const response = await queue.add(async () => {
                     try {
                         return await Promise.race([
                             oraPromise(
-                                bingAI.sendMessage(prompt, {
-                                    jailbreakConversationId: true,
-                                    toneStyle: isPdfConversation ? 'creative' : bingAIMode, // Values [creative, precise, fast] default: balanced
-                                    plugins: [],
-                                    persona: process.env.BING_AI_PERSONA ?? '',
-                                    ...(context && { context }),
-                                    ...(imageBase64 && { imageBase64 }),
-                                    systemMessage,
-                                    onProgress(token) {
+                                state.getMyState().metaAi.sendMessage(systemMessage + ' ' + prompt, {
+                                    model: process.env.META_AI_MODEL ?? 'meta-llama-3',
+                                    onProgress: (token) => {
                                         if (process.env.BOT_MESSAGE_ON_PROCESS === 'true') {
                                             if (token.includes('iframe')) {
-                                                return // Skip iframes
+                                                return
                                             }
 
                                             messageBotTmp += token
@@ -241,18 +230,17 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
                         console.error(error)
                     }
                 })
-
                 await provider.vendor.sendMessage(ctx?.key?.remoteJid, {
                     edit: messageBot.key,
-                    text: parseLinksWithText(response?.response) ?? 'Error',
+                    text: parseLinksWithText(response) ?? 'Error',
                 })
 
-                if (isAudioConversation && process.env.BOT_TEXT_TO_SPEECH === 'true') {
+                if (isAudioConversation && process.env.BOT_TEXT_TO_SPEECH === 'true' && response != '') {
                     state.update({
                         finishedAnswer: true,
                     })
 
-                    const audioBuffer = await textToSpeech(filterText(response.response))
+                    const audioBuffer = await textToSpeech(filterText(response))
                     await provider.vendor.sendMessage(
                         ctx?.key?.remoteJid,
                         { audio: audioBuffer, ptt: true, mimetype: 'audio/mpeg' },
@@ -260,32 +248,18 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
                     )
                 }
 
-                const isImageResponse = await bingAI.detectImageInResponse(response)
-
-                if (isImageResponse?.srcs?.length > 0) {
-                    const srcs = isImageResponse.srcs.map((src) => {
-                        return src.replace('w=270&h=270', 'w=1024&h=1024')
-                    })
-                    let urls = ''
-                    srcs.forEach(async (src, index) => {
-                        // If image not have w=1024&h=1024 continue
-                        if (!src.includes('w=1024&h=1024')) {
-                            return
-                        }
-
-                        await provider.vendor.sendMessage(ctx?.key?.remoteJid, {
-                            image: {
-                                url: src,
-                            },
-                        })
-                        urls += isImageResponse.urls[index] + '\n'
-                    })
-
-                    await flowDynamic(urls)
-                }
 
                 state.update({
-                    conversationBot: response,
+                    conversationBot: [
+                        {
+                            role: 'user',
+                            content: prompt,
+                        },
+                        {
+                            role: 'assistant',
+                            content: response,
+                        },
+                    ],
                     conversationNumber: 1,
                     finishedAnswer: true,
                 })
@@ -300,7 +274,7 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
             return
         }
 
-        if (state.getMyState()?.conversationBot?.conversationId) {
+        if (state.getMyState()?.conversationBot) {
             const prompt = ctx.body.trim()
 
             state.update({
@@ -312,18 +286,12 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
                     try {
                         return await Promise.race([
                             oraPromise(
-                                bingAI.sendMessage(prompt, {
-                                    jailbreakConversationId:
-                                        state.getMyState()?.conversationBot.jailbreakConversationId,
-                                    parentMessageId: state.getMyState()?.conversationBot.messageId,
-                                    toneStyle: isPdfConversation ? 'creative' : bingAIMode, // VAlues or [creative, precise, fast] default: balanced
-                                    plugins: [],
-                                    ...(context && { context }),
-                                    ...(imageBase64 && { imageBase64 }),
-                                    onProgress(token) {
+                                state.getMyState().metaAi.sendMessage(prompt, {
+                                    model: process.env.META_AI_MODEL ?? 'meta-llama-3',
+                                    onProgress: (token) => {
                                         if (process.env.BOT_MESSAGE_ON_PROCESS === 'true') {
                                             if (token.includes('iframe')) {
-                                                return // Skip iframes
+                                                return
                                             }
 
                                             messageBotTmp += token
@@ -345,12 +313,12 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
                     }
                 })
 
-                if (isAudioConversation) {
+                if (isAudioConversation && response != '') {
                     state.update({
                         finishedAnswer: true,
                     })
 
-                    const audioBuffer = await textToSpeech(filterText(response.response))
+                    const audioBuffer = await textToSpeech(filterText(response))
                     await provider.vendor.sendMessage(
                         ctx?.key?.remoteJid,
                         { audio: audioBuffer, ptt: true, mimetype: 'audio/mpeg' },
@@ -358,41 +326,25 @@ const flowBotWelcome = addKeyword(EVENTS.WELCOME).addAction(
                     )
                 }
 
-                const isImageResponse = await bingAI.detectImageInResponse(response)
-
-                if (isImageResponse?.srcs?.length > 0) {
-                    const srcs = isImageResponse.srcs.map((src) => {
-                        return src.replace('w=270&h=270', 'w=1024&h=1024')
-                    })
-                    let urls = ''
-                    srcs.forEach(async (src, index) => {
-                        if (!src.includes('w=1024&h=1024')) {
-                            return
-                        }
-
-                        await provider.vendor.sendMessage(ctx?.key?.remoteJid, {
-                            image: {
-                                url: src,
-                            },
-                        })
-                        urls += isImageResponse.urls[index] + '\n'
-                    })
-
-                    await flowDynamic(urls)
-                }
 
                 await provider.vendor.sendMessage(ctx?.key?.remoteJid, {
                     edit: messageBot.key,
-                    text: parseLinksWithText(response?.response) ?? 'Error',
+                    text: parseLinksWithText(response) ?? 'Error',
                 })
-
-
-
-
 
                 state.update({
                     name: ctx.pushName ?? ctx.from,
-                    conversationBot: response,
+                    conversationBot: [
+                        ...state.getMyState()?.conversationBot,
+                        {
+                            role: 'user',
+                            content: prompt,
+                        },
+                        {
+                            role: 'assistant',
+                            content: response,
+                        },
+                    ],
                     // eslint-disable-next-line no-unsafe-optional-chaining
                     conversationNumber: state.getMyState()?.conversationNumber + 1,
                     finishedAnswer: true,
