@@ -21,7 +21,7 @@ import {
     filterText,
 } from './utils/index.js'
 import { downloadMediaMessage } from '@whiskeysockets/baileys'
-import { MetaAI } from './services/MetaAI.js'
+import { MetaAI } from './services/MetaAi.js'
 import { pdfToText } from './services/PdfToText.js'
 import { textToSpeech } from './services/TextToSpeech.js'
 import languages from './languages.js'
