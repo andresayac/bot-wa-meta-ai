@@ -10,3 +10,4 @@ test-*.*
 cache.json
 context-demo-text.txt
 queue.class.log
+baileys_store.*
